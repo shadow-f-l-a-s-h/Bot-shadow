@@ -1,4 +1,4 @@
-6module.exports = {
+module.exports = {
     name: 'ping',
     async execute(sock, m) {
         const sender = m.key.remoteJid;
