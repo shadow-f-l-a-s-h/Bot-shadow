@@ -1,10 +1,17 @@
-module.exports = {
+6module.exports = {
     name: 'ping',
-    description: 'Mide la velocidad de respuesta',
-    async execute(sock, m, args) {
+    async execute(sock, m) {
         const sender = m.key.remoteJid;
-        console.log('[COMANDO] Ejecutando .ping desde archivo separado');
-        await sock.sendMessage(sender, { text: 'Pong! 🏓 (Desde archivo modular)' }, { quoted: m });
+        const start = Date.now();
+        
+        const text = `
+╭━━━✦ *SHADOW-BOT* ✦━━━╮
+┃ 🏓 *PONG!*
+┃ ⚡ Estado: *Activo & Estable*
+┃ ⏱️ Latencia: \`${Date.now() - start} ms\`
+╰━━━━━━━━━━━━━━━━━━━╯`.trim();
+
+        await sock.sendMessage(sender, { text }, { quoted: m });
     }
 };
 

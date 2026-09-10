@@ -1,6 +1,7 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
@@ -13,21 +14,31 @@ async function startBot() {
         printQRInTerminal: false
     });
 
-    // Lógica para el emparejamiento por código de 8 dígitos si no está conectado
+    // Cargador dinámico de comandos
+    sock.commands = new Map();
+    const commandsPath = path.join(__dirname, 'commands');
+    
+    if (fs.existsSync(commandsPath)) {
+        const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+        for (const file of commandFiles) {
+            const filePath = path.join(commandsPath, file);
+            const command = require(filePath);
+            if ('name' in command && 'execute' in command) {
+                sock.commands.set(command.name, command);
+            }
+        }
+    }
+
     if (!sock.authState.creds.registered) {
-        const readline = require('readline').createInterface({
-            input: process.stdin,
-            output: process.stdout
-        });
-        
+        const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
         const question = (text) => new Promise((resolve) => readline.question(text, resolve));
-        const phoneNumber = await question('Por favor ingresa tu número de WhatsApp con código de país (ej. 519XXXXXXXX): ');
+        const phoneNumber = await question('Ingresa tu número de WhatsApp (ej. 519XXXXXXXX): ');
         readline.close();
 
         setTimeout(async () => {
             let code = await sock.requestPairingCode(phoneNumber.trim());
             code = code?.match(/.{1,4}/g)?.join('-') || code;
-            console.log(`\n Tu código de emparejamiento es: ${code}\n`);
+            console.log(`\n🔑 Código de emparejamiento: ${code}\n`);
         }, 3000);
     }
 
@@ -37,16 +48,12 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexión cerrada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
-            }
+            if (shouldReconnect) startBot();
         } else if (connection === 'open') {
-            console.log('¡Bot conectado exitosamente a WhatsApp y listo para responder!');
+            console.log('💎 [SYSTEM] Bot Shadow PRIME conectado y operando a máxima potencia.');
         }
     });
 
-    // Manejo robusto de mensajes
     sock.ev.on('messages.upsert', async (chatUpdate) => {
         try {
             const m = chatUpdate.messages[0];
@@ -54,73 +61,31 @@ async function startBot() {
 
             const sender = m.key.remoteJid;
             const messageType = Object.keys(m.message)[0];
-            
-            // Extraer el texto de forma segura sin importar si es normal o citado
             const body = messageType === 'conversation' ? m.message.conversation :
-                         messageType === 'extendedTextMessage' ? m.message.extendedTextMessage.text :
-                         messageType === 'imageMessage' ? m.message.imageMessage.caption : '';
+                         messageType === 'extendedTextMessage' ? m.message.extendedTextMessage.text : '';
 
-            console.log(`[MENSAJE] De: ${sender} | Texto: ${body || '[Contenido multimedia/otro]'}`);
+            if (body) {
+                console.log(`📥 [MSG] ${sender.split('@')[0]} ➔ ${body}`);
+            }
 
-            if (m.key.fromMe) return; // Ignora los mensajes propios para evitar bucles
-            if (!body) return;
+            if (m.key.fromMe || !body) return;
 
             const prefix = '.';
             if (!body.startsWith(prefix)) return;
 
             const args = body.slice(prefix.length).trim().split(/ +/);
-            const command = args.shift().toLowerCase();
+            const commandName = args.shift().toLowerCase();
 
-            console.log(`[COMANDO] Detectado: .${command}`);
+            if (!sock.commands.has(commandName)) return;
 
-            switch (command) {
-                case 'ping':
-                    console.log('[RESPUESTA] Enviando Pong!...');
-                    await sock.sendMessage(sender, { text: 'Pong! 🏓' }, { quoted: m });
-                    break;
-
-                case 'prefijo':
-                    await sock.sendMessage(sender, { text: `El prefijo actual del bot es: *${prefix}*` }, { quoted: m });
-                    break;
-
-                case 'reinicio':
-                    await sock.sendMessage(sender, { text: '🔄 Reiniciando el bot...' }, { quoted: m });
-                    console.log('Reiniciando bot por comando...');
-                    process.exit(0);
-                    break;
-
-                case 'fix':
-                    await sock.sendMessage(sender, { text: '⬇️ Actualizando código desde GitHub...' }, { quoted: m });
-                    exec('git pull', async (error, stdout, stderr) => {
-                        if (error) {
-                            await sock.sendMessage(sender, { text: `❌ Error al actualizar:\n\`\`\`${error.message}\`\`\`` }, { quoted: m });
-                            return;
-                        }
-                        await sock.sendMessage(sender, { text: `✅ Actualización aplicada con éxito:\n\`\`\`${stdout}\`\`\`` }, { quoted: m });
-                    });
-                    break;
-
-                case 'rfix':
-                    await sock.sendMessage(sender, { text: '⚡ Sincronizando con rama main y reiniciando sistema...' }, { quoted: m });
-                    exec('git fetch origin main && git reset --hard origin/main', async (error, stdout, stderr) => {
-                        if (error) {
-                            await sock.sendMessage(sender, { text: `❌ Error crítico en rfix:\n\`\`\`${error.message}\`\`\`` }, { quoted: m });
-                            return;
-                        }
-                        await sock.sendMessage(sender, { text: '🔄 Sincronización completa. Reiniciando proceso...' }, { quoted: m });
-                        setTimeout(() => process.exit(0), 2000);
-                    });
-                    break;
-
-                default:
-                    console.log(`[AVISO] El comando .${command} no existe.`);
-                    break;
-            }
+            console.log(`⚡ [EXEC] Ejecutando comando: .${commandName}`);
+            const command = sock.commands.get(commandName);
+            await command.execute(sock, m, args, prefix);
         } catch (err) {
-            console.log('Error procesando mensaje:', err);
+            console.log('❌ Error en procesador:', err);
         }
     });
 }
 
 startBot();
-
+	
