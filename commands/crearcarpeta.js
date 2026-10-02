@@ -3,13 +3,13 @@ const path = require('path');
 const { exec } = require('child_process');
 
 module.exports = {
-    name: 'crearcarpeta',
+    name: 'crear',
     async execute(sock, m, args) {
         const fullText = args.join(' ');
 
         if (!fullText) {
             await sock.sendMessage(m.key.remoteJid, { 
-                text: '❌ Uso incorrecto.\nEjemplo:\n*!crearcarpeta commands/test.js | console.log("Hola");*' 
+                text: '❌ Uso incorrecto. Ejemplo:\n*!crear commands/ejemplo.js | console.log("Hola");*' 
             }, { quoted: m });
             return;
         }
@@ -34,29 +34,27 @@ module.exports = {
             }
 
             await sock.sendMessage(m.key.remoteJid, { 
-                text: `📁 Creado localmente:\n\`${targetPath}\`\n\n🔄 Subiendo a GitHub automáticamente...` 
+                text: `📁 Creado localmente:\n\`${targetPath}\`\n\n🔄 Sincronizando con GitHub...` 
             }, { quoted: m });
 
-            // Sincronizar automáticamente con GitHub usando Git desde Termux
-            exec(`git add . && git commit -m "Bot: Auto-creación de ${targetPath}" && git push origin main`, async (error, stdout, stderr) => {
+            // Sube los cambios automáticamente a GitHub
+            exec(`git add . && git commit -m "Bot: Creado ${targetPath}" && git push origin main`, async (error, stdout, stderr) => {
                 if (error) {
-                    console.error(`Error en Git push: ${error.message}`);
                     await sock.sendMessage(m.key.remoteJid, { 
                         text: `⚠️ Creado localmente, pero falló el push a GitHub: \`${error.message}\`` 
                     });
                     return;
                 }
 
-                console.log(`[GITHUB] Cambios subidos correctamente: ${stdout}`);
                 await sock.sendMessage(m.key.remoteJid, { 
-                    text: `🚀 ¡Y subido a GitHub con éxito!\n🌐 Repositorio actualizado por el bot.` 
+                    text: `🚀 ¡Creado y subido a GitHub con éxito!` 
                 });
             });
 
         } catch (error) {
-            console.error('Error:', error);
+            console.error('Error al crear:', error);
             await sock.sendMessage(m.key.remoteJid, { text: `❌ Error: ${error.message}` }, { quoted: m });
         }
     }
 };
-  
+                
