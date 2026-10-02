@@ -3,7 +3,7 @@ const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
 
-// Configuración general del Bot
+// Configuración global del Bot
 const CONFIG = {
     prefix: '!',
     authFolder: 'auth_info'
@@ -33,7 +33,6 @@ async function startBot() {
                 const command = require(filePath);
                 if (command.name && typeof command.execute === 'function') {
                     sock.commands.set(command.name, command);
-                    // Si el comando tiene alias, los registramos también
                     if (command.aliases && Array.isArray(command.aliases)) {
                         command.aliases.forEach(alias => sock.commands.set(alias, command));
                     }
@@ -42,29 +41,41 @@ async function startBot() {
                 console.error(`❌ Error al cargar el comando ${file}:`, err.message);
             }
         }
-        console.log(`📦 Se han cargado ${sock.commands.size} comandos/alias correctamente.`);
+        console.log(`📦 Se han cargado ${sock.commands.size} comandos correctamente.`);
     } else {
-        // Creamos la carpeta commands automáticamente si no existe
         fs.mkdirSync(commandsPath, { recursive: true });
         console.log('📁 Carpeta "commands" creada automáticamente.');
     }
 
-    // Sistema de emparejamiento por número (Pairing Code)
+    // Sistema de emparejamiento avanzado por Código (Pairing Code)
     if (!sock.authState.creds.registered) {
         const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
         const question = (text) => new Promise((resolve) => readline.question(text, resolve));
-        const phoneNumber = await question('📱 Ingresa tu número de WhatsApp (ej: 519...): ');
+        
+        console.log('\n=========================================');
+        console.log('🔗 ASISTENTE DE VINCULACIÓN POR CÓDIGO');
+        console.log('=========================================');
+        const phoneNumber = await question('📱 Ingresa el número de WhatsApp del bot (con código de país, sin + ni espacios):\nEjemplo (Perú): 51912345678\n-> ');
         readline.close();
 
         setTimeout(async () => {
             try {
+                console.log('\n⏳ Solicitando código de emparejamiento a WhatsApp...');
                 let code = await sock.requestPairingCode(phoneNumber.trim());
                 code = code?.match(/.{1,4}/g)?.join('-') || code;
-                console.log(`\n🔑 Tu código de emparejamiento es: [ ${code} ]\n`);
+                
+                console.log('\n-----------------------------------------');
+                console.log(`🔑 CÓDIGO DE VINCULACIÓN: [ ${code} ]`);
+                console.log('-----------------------------------------');
+                console.log('Instrucciones para vincularlo:');
+                console.log('1. Abre WhatsApp en tu celular.');
+                console.log('2. Ve a Configuración / Ajustes > Dispositivos vinculados.');
+                console.log('3. Toca en "Vincular dispositivo" y luego en "Vincular con el número de teléfono".');
+                console.log('4. Introduce el código de 8 dígitos que aparece arriba.\n');
             } catch (err) {
                 console.error('❌ Error al solicitar el código de emparejamiento:', err.message);
             }
-        }, 3000);
+        }, 4000);
     }
 
     // Guardar credenciales de sesión automáticamente
@@ -87,57 +98,53 @@ async function startBot() {
         }
     });
 
-    // Handler Principal de Mensajes (Máximo rendimiento y control en consola)
+    // Handler Principal de Mensajes (Robusto y con alertas claras)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
-        const m = messages[0];
+        const m = messages.at(0);
         if (!m.message || m.key.fromMe) return;
 
-        // Extraer texto del mensaje de forma segura
         const messageType = Object.keys(m.message)[0];
         const body = messageType === 'conversation' ? m.message.conversation :
                      messageType === 'extendedTextMessage' ? m.message.extendedTextMessage.text :
-                     messageType === 'imageMessage' ? m.message.imageMessage.caption :
-                     messageType === 'videoMessage' ? m.message.videoMessage.caption : '';
+                     messageType === 'imageMessage' ? m.message.imageMessage.caption : '';
 
         if (!body) return;
 
         const senderJid = m.key.remoteJid;
-        const pushName = m.pushName || 'Usuario Anónimo';
+        const pushName = m.pushName || 'Usuario';
 
-        // Detectar si el usuario escribió un comando intentando usarlo pero sin prefijo
-        // (Ejemplo: escribe "crear carpeta test" en vez de "!crear carpeta test")
-        const firstWord = body.trim().split(/ +/)[0].toLowerCase();
-        
+        // 1. Validar si el usuario olvidó poner el prefijo pero escribió un comando válido
         if (!body.startsWith(CONFIG.prefix)) {
-            // Verificamos si la primera palabra coincide con un comando real existente
+            const firstWord = body.trim().split(/ +/)[0].toLowerCase();
             if (sock.commands.has(firstWord)) {
-                console.log(`[AVISO] ⚠️ ${pushName} intentó usar el comando '${firstWord}' sin el prefijo (${CONFIG.prefix}).`);
-                
+                console.log(`[AVISO] ⚠️ ${pushName} intentó usar '${firstWord}' sin el prefijo (${CONFIG.prefix}).`);
                 await sock.sendMessage(senderJid, { 
-                    text: `⚠️ *¡Ups! Olvidaste el prefijo.*\nPara ejecutar comandos debes usar el símbolo *${CONFIG.prefix}* adelante.\n\nEjemplo: \`${CONFIG.prefix}${body}\`` 
+                    text: `⚠️️ *¡Olvidaste el prefijo!*\nPara ejecutar comandos debes usar el símbolo *${CONFIG.prefix}* adelante.\n\nEjemplo: \`${CONFIG.prefix}${body}\`` 
                 }, { quoted: m });
             }
             return;
         }
 
-        // Procesamiento formal del comando con prefijo
+        // 2. Procesamiento de comandos con prefijo
         const args = body.slice(CONFIG.prefix.length).trim().split(/ +/);
         const commandName = args.shift().toLowerCase();
 
         const command = sock.commands.get(commandName);
 
-        // Si el comando no existe en absoluto
+        // 3. Si el comando NO existe, notifica tanto en consola como en WhatsApp
         if (!command) {
-            console.log(`[CMD LOG] ❌ Comando no reconocido: "${commandName}" enviado por ${pushName} (${senderJid})`);
+            console.log(`[CMD LOG] ❌ Comando inexistente: "${commandName}" intentado por ${pushName}`);
+            await sock.sendMessage(senderJid, { 
+                text: `❌ El comando \`${CONFIG.prefix}${commandName}\` no existe. Usa \`${CONFIG.prefix}ayuda\` o verifica el nombre.` 
+            }, { quoted: m });
             return;
         }
 
-        // Registrar en la consola la ejecución exitosa del comando
+        // 4. Ejecución exitosa registrada en consola
         console.log(`[CMD LOG] ⚡ Ejecutando [ ${commandName} ] solicitado por 👤 ${pushName}`);
 
         try {
-            // Ejecutar el comando pasándole el socket, el mensaje completo y los argumentos limpios
             await command.execute(sock, m, args, CONFIG);
         } catch (error) {
             console.error(`❌ Error crítico ejecutando el comando [${commandName}]:`, error);
@@ -149,3 +156,4 @@ async function startBot() {
 }
 
 startBot();
+                        
