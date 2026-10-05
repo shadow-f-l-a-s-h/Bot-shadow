@@ -1,64 +1,102 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const readline = require('readline');
+const fs = require('fs');
+const path = require('path');
+const qrcode = require('qrcode-terminal');
 
-// Interfaz para leer desde la consola si se requiere el código de emparejamiento
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const question = (text) => new Promise((resolve) => rl.question(text, resolve));
+const CONFIG = {
+    prefix: '!',
+    authFolder: 'auth_info',
+    botName: ' 𝐒 𝐇 𝐀 𝐃 𝐎 𝐖 - 𝐁 𝐎 T '
+};
 
 async function startBot() {
-    // Guarda la sesión en una carpeta llamada 'auth_info'
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const { state, saveCreds } = await useMultiFileAuthState(CONFIG.authFolder);
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }),
         auth: state,
-        printQRInTerminal: false, // Desactivamos el QR para usar código de dígitos
-        logger: pino({ level: 'silent' })
+        printQRInTerminal: true, // Muestra el QR directamente en la terminal
+        browser: ['ShadowBot', 'Chrome', '1.0.0']
     });
 
-    // Si el dispositivo no está registrado, solicitamos el código de vinculación por 8 dígitos
-    if (!sock.authState.creds.registered) {
-        const phoneNumber = await question('Por favor, ingresa tu número de WhatsApp con código de país (ej. 51912345678): ');
-        
-        // Esperamos unos segundos para que la conexión inicialice
-        setTimeout(async () => {
-            const code = await sock.requestPairingCode(phoneNumber.trim());
-            console.log(`\n🔑 Tu código de vinculación de 8 dígitos es: ${code}\n`);
-            console.log('Ve a WhatsApp > Dispositivos vinculados > Vincular un dispositivo > Vincular con el número de teléfono.\n');
-        }, 3000);
-    }
+    // Cargador dinámico de comandos
+    sock.commands = new Map();
+    const commandsPath = path.join(__dirname, 'commands');
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            console.log('Conexión cerrada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
+    if (fs.existsSync(commandsPath)) {
+        const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+        for (const file of commandFiles) {
+            const filePath = path.join(commandsPath, file);
+            try {
+                const command = require(filePath);
+                if (command.name && typeof command.execute === 'function') {
+                    sock.commands.set(command.name, command);
+                    if (command.aliases && Array.isArray(command.aliases)) {
+                        command.aliases.forEach(alias => sock.commands.set(alias, command));
+                    }
+                }
+            } catch (err) {
+                console.error(`❌ Error al cargar comando ${file}:`, err.message);
             }
-        } else if (connection === 'open') {
-            console.log('¡Bot conectado exitosamente a WhatsApp!');
         }
-    });
+        console.log(`📦 Se han cargado ${sock.commands.size} comandos correctamente.`);
+    }
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Escuchar mensajes entrantes para pruebas
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+    // Control de conexión
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-        const sender = msg.key.remoteJid;
-        const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (qr) {
+            console.log('\n📱 Escanea el código QR con tu WhatsApp:\n');
+            qrcode.generate(qr, { small: true });
+        }
 
-        console.log(`Mensaje recibido de ${sender}: ${textMessage}`);
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('⚠️ Conexión cerrada. Reconectando...', shouldReconnect);
+            if (shouldReconnect) {
+                setTimeout(() => startBot(), 3000);
+            }
+        } else if (connection === 'open') {
+            console.log('\n╔════════════════════════════════════════════╗');
+            console.log('║        ✨  𝐒 𝐇 𝐀 𝐃 𝐎 𝐖   𝐁 𝐎 𝐓  ✨        ║');
+            console.log('║      Naruto RPG Engine - Operativo         ║');
+            console.log('╚════════════════════════════════════════════╝');
+            console.log(`⚡ Prefijo del sistema: [ ${CONFIG.prefix} ]\n`);
+        }
+    });
 
-        // Respuesta automática de prueba
-        if (textMessage && textMessage.toLowerCase() === 'ping') {
-            await sock.sendMessage(sender, { text: '¡Pong! 🤖 El bot en GitHub/Cloud está funcionando correctamente.' });
+    // Handler de Mensajes
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        try {
+            if (type !== 'notify') return;
+            const m = messages.at(0);
+            if (!m.message) return;
+
+            const messageType = Object.keys(m.message)[0];
+            const body = messageType === 'conversation' ? m.message.conversation :
+                         messageType === 'extendedTextMessage' ? m.message.extendedTextMessage.text : '';
+
+            if (!body || !body.startsWith(CONFIG.prefix)) return;
+
+            const args = body.slice(CONFIG.prefix.length).trim().split(/ +/);
+            const commandName = args.shift().toLowerCase();
+            const command = sock.commands.get(commandName);
+
+            if (!command) return;
+
+            console.log(`[CMD] Ejecutando: ${commandName}`);
+            await command.execute(sock, m, args, CONFIG);
+        } catch (err) {
+            console.error('Error procesando mensaje:', err);
         }
     });
 }
 
 startBot();
+            
