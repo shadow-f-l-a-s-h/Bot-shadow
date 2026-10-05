@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, delay } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -7,7 +7,8 @@ const path = require('path');
 const CONFIG = {
     prefix: '!',
     authFolder: 'auth_info',
-    botName: ' 𝐒 𝐇 𝐀 𝐃 𝐎 𝐖 - 𝐁 𝐎 T '
+    botName: ' 𝐒 𝐇 𝐀 𝐃 𝐎 𝐖 - 𝐁 𝐎 T ',
+    phoneNumber: '51983564381' // Tu número fijo configurado para evitar fallos
 };
 
 async function startBot() {
@@ -19,7 +20,7 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         auth: state,
         printQRInTerminal: false,
-        browser: ['ShadowBot', 'Chrome', '1.0.0']
+        browser: ['Chrome', 'Desktop', '1.0.0']
     });
 
     // Cargador dinámico de comandos
@@ -48,37 +49,18 @@ async function startBot() {
         console.log('📁 Carpeta "commands" creada automáticamente.');
     }
 
-    // Sistema de emparejamiento por código (Pairing Code)
-    if (!sock.authState.creds.registered) {
-        const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
-        const question = (text) => new Promise((resolve) => readline.question(text, resolve));
-        
-        console.log('\n=========================================');
-        console.log('🔗 ASISTENTE DE VINCULACIÓN POR CÓDIGO');
-        console.log('=========================================');
-        const phoneNumber = await question('📱 Ingresa tu número de WhatsApp (ej: 51912345678):\n-> ');
-        readline.close();
-
-        setTimeout(async () => {
-            try {
-                let code = await sock.requestPairingCode(phoneNumber.trim());
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                console.log(`\n🔑 CÓDIGO DE VINCULACIÓN: [ ${code} ]\n`);
-            } catch (err) {
-                console.error('❌ Error al solicitar el código:', err.message);
-            }
-        }, 4000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
-    // Control de conexión con Banner de Letras Especiales
-    sock.ev.on('connection.update', (update) => {
+    // Control de conexión y solicitud segura de Código de Vinculación
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
+
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('⚠️ Conexión cerrada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) startBot();
+            if (shouldReconnect) {
+                setTimeout(() => startBot(), 3000);
+            }
         } else if (connection === 'open') {
             console.log('\n╔════════════════════════════════════════════╗');
             console.log('║        ✨  𝐒 𝐇 𝐀 𝐃 𝐎 𝐖   𝐁 𝐎 𝐓  ✨        ║');
@@ -88,11 +70,31 @@ async function startBot() {
         }
     });
 
-    // Handler de Mensajes (Configurado para aceptar tus propios mensajes)
+    // Solicitar código de emparejamiento de forma segura al iniciar si no está registrado
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                console.log('\n=========================================');
+                console.log('🔗 SOLICITANDO CÓDIGO DE VINCULACIÓN...');
+                console.log('=========================================');
+                
+                await delay(3000); // Espera estable para evitar "Connection Closed"
+                let code = await sock.requestPairingCode(CONFIG.phoneNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                console.log(`\n🔑 CÓDIGO DE VINCULACIÓN: [ ${code} ]`);
+                console.log(`📱 Usando número: ${CONFIG.phoneNumber}\n`);
+            } catch (err) {
+                console.error('❌ Error al solicitar el código:', err.message);
+            }
+        }, 5000);
+    }
+
+    // Handler de Mensajes
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         const m = messages.at(0);
-        if (!m.message) return; // 👈 Ya no bloquea fromMe para que te responda a ti mismo
+        if (!m.message) return;
 
         const messageType = Object.keys(m.message)[0];
         const body = messageType === 'conversation' ? m.message.conversation :
@@ -104,13 +106,11 @@ async function startBot() {
         const senderJid = m.key.remoteJid;
         const pushName = m.pushName || 'ShadowUser';
 
-        // Validar si olvidaste el prefijo pero escribiste un comando existente
         if (!body.startsWith(CONFIG.prefix)) {
             const firstWord = body.trim().split(/ +/)[0].toLowerCase();
             if (sock.commands.has(firstWord)) {
-                console.log(`[AVISO] ⚠️ ${pushName} usó '${firstWord}' sin prefijo.`);
                 await sock.sendMessage(senderJid, { 
-                    text: `⚠️ *¡Olvidaste el prefijo!*\nUsa el símbolo *${CONFIG.prefix}* adelante.\n\nEjemplo: \`${CONFIG.prefix}${body}\`` 
+                    text: `⚠️ *¡Olvidaste el prefijo!*\nUsa el símbolo *${CONFIG.prefix}* adelante.` 
                 }, { quoted: m });
             }
             return;
@@ -118,27 +118,16 @@ async function startBot() {
 
         const args = body.slice(CONFIG.prefix.length).trim().split(/ +/);
         const commandName = args.shift().toLowerCase();
-
         const command = sock.commands.get(commandName);
 
-        if (!command) {
-            console.log(`[CMD LOG] ❌ Comando no existente: "${commandName}"`);
-            await sock.sendMessage(senderJid, { 
-                text: `❌ El comando \`${CONFIG.prefix}${commandName}\` no existe.` 
-            }, { quoted: m });
-            return;
-        }
-
-        console.log(`[CMD LOG] ⚡ Ejecutando [ ${commandName} ] solicitado por 👤 ${pushName}`);
+        if (!command) return;
 
         try {
             await command.execute(sock, m, args, CONFIG);
         } catch (error) {
             console.error(`❌ Error en comando [${commandName}]:`, error);
-            await sock.sendMessage(senderJid, { text: `❌ Error interno al procesar \`${commandName}\`.` }, { quoted: m });
         }
     });
 }
 
 startBot();
-    
